@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+
+# Vite cache
+.vite/
+
+# Env files (never commit secrets/keys)
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor/OS junk
+.DS_Store
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Generated data (only if you want prep_data.py to regenerate this fresh every
+# time instead of committing it — remove this line if you'd rather keep
+# leaks.json tracked in git, which is what your current deploy relies on)
+# src/data/leaks.json
