@@ -1,0 +1,64 @@
+.card-swap-container {
+  position: relative;
+  margin: 0 auto;
+  transform-origin: center center;
+  perspective: 900px;
+  overflow: visible;
+}
+
+.card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(155deg, #eaf3fc 0%, #cfe6fb 100%);
+  color: #eaf3fc;
+  padding: 1.6rem 1.7rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: 0 20px 45px rgba(63, 124, 184, 0.22);
+  transform-style: preserve-3d;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.card .source-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #3f7cb8;
+  background: rgba(111, 168, 220, 0.14);
+  border: 1px solid rgba(111, 168, 220, 0.3);
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  width: fit-content;
+}
+
+.card .source-name {
+  font-family: var(--font-display, 'Fraunces', serif);
+  font-size: 1.6rem;
+  font-weight: 600;
+  margin: 0.9rem 0 0.4rem;
+  line-height: 1.15;
+}
+
+.card .source-note {
+  font-family: var(--font-body, sans-serif);
+  font-size: 0.85rem;
+  color: #4d6a85;
+  line-height: 1.5;
+}
+
+@media (max-width: 860px) {
+  .card-swap-container {
+    transform: scale(0.65) translate(-90px, 190px);
+    transform-origin: center top;
+  }
+}
