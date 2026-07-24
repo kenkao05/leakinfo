@@ -4,6 +4,11 @@ CSV, validates and deduplicates them, and writes any accepted rows back into
 india_exam_leaks_master.csv. Rows below Medium confidence, or touching
 arrests/convictions/deaths fields, are written to pending_review.csv instead
 so a human looks at them before they ever reach the dataset.
+
+Uses Tavily for search (free tier, no card) and a plain Groq model (not
+groq/compound) purely for extraction from the returned snippets. compound was
+returning 413 Request Entity Too Large on its internal search step, so search
+and extraction are kept as two separate calls here.
 """
 
 import csv
@@ -12,6 +17,7 @@ import os
 import re
 from datetime import date, datetime
 
+import requests
 from groq import Groq
 
 CSV_PATH = "india_exam_leaks_master.csv"
@@ -29,6 +35,14 @@ PM_TRANSITIONS = [
     (date(1998, 3, 19), "Atal Bihari Vajpayee", "NDA"),
     (date(2004, 5, 22), "Manmohan Singh", "UPA"),
     (date(2014, 5, 26), "Narendra Modi", "NDA"),
+]
+
+SEARCH_QUERIES = [
+    "India exam paper leak",
+    "India recruitment exam leak cancelled",
+    "NEET JEE CUET leak investigation",
+    "India board exam paper leak",
+    "state PSC teacher eligibility test leak India",
 ]
 
 
@@ -79,17 +93,56 @@ def is_duplicate(candidate, existing_rows):
     return False
 
 
-def ask_groq_for_incidents(since_date: str):
+def search_tavily(query: str):
+    resp = requests.post(
+        "https://api.tavily.com/search",
+        json={
+            "api_key": os.environ["TAVILY_API_KEY"],
+            "query": query,
+            "topic": "news",
+            "time_range": "month",
+            "max_results": 8,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json().get("results", [])
+
+
+def gather_search_results():
+    all_results = []
+    seen_urls = set()
+    for q in SEARCH_QUERIES:
+        try:
+            results = search_tavily(q)
+        except requests.HTTPError as e:
+            print(f"Tavily search failed for query '{q}': {e}")
+            continue
+        for r in results:
+            if r.get("url") and r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                all_results.append(r)
+    return all_results
+
+
+def ask_groq_to_extract(since_date: str, search_results):
+    if not search_results:
+        return []
+
+    source_block = "\n\n".join(
+        f"URL: {r['url']}\nTitle: {r.get('title', '')}\nSnippet: {r.get('content', '')[:500]}"
+        for r in search_results
+    )
+
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-    system_prompt = f"""You are a research assistant compiling a dataset of India exam-leak incidents.
-Search the web for CONFIRMED, ALLEGED, DENIED, or SUSPECTED exam paper leaks, cancellations, or
-related irregularities in India, reported since {since_date}. This includes national entrance exams
-(NEET, JEE, CUET, CTET, UGC-NET), central recruitment exams (SSC, UPSC, Railways, KVS, ONGC, ASRB, Army),
-state recruitment exams (police, teacher eligibility, PSC), and school board exams (CBSE, state boards).
+    system_prompt = f"""You are extracting India exam-leak incidents from search results below.
+Only include incidents clearly described in the provided sources, reported since {since_date}.
+Never invent a URL or a detail not present in the snippets. If a snippet is too vague to extract
+a real incident, skip it.
 
-Return ONLY a raw JSON array, no markdown fences, no commentary, no preamble. Each object must have
-EXACTLY these keys (use empty string "" for unknown text fields, empty string for unknown numbers too):
+Return ONLY a raw JSON array, no markdown fences, no commentary, no preamble. Each object must
+have EXACTLY these keys (use "" for unknown text/number fields):
 
 date (YYYY-MM-DD, or YYYY-01-01 if only the year is known)
 exam_name
@@ -105,19 +158,17 @@ aspirants_affected (integer as string, or "")
 linked_deaths (integer as string, or "")
 deaths_note (only if linked_deaths > 0)
 source_name (the publication name)
-source_url (the actual article URL — must be a real, working URL you found via search)
+source_url (must be one of the exact URLs given above — do not alter or guess at URLs)
 confidence ("High", "Medium", or "Low" — how well-corroborated is this, not how serious)
 
-If you find nothing new, return an empty array: []
-Do not invent source_url values. If you cannot find a working URL for an incident, omit that incident
-entirely rather than guessing at a URL."""
+If nothing qualifies, return [].
+
+SOURCES:
+{source_block}"""
 
     response = client.chat.completions.create(
-        model="groq/compound",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Find India exam leak incidents reported since {since_date}."},
-        ],
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "system", "content": system_prompt}],
     )
 
     raw = response.choices[0].message.content.strip()
@@ -137,15 +188,23 @@ def main():
     since_str = last_date.isoformat()
 
     print(f"Sweeping for incidents since {since_str}...")
-    candidates = ask_groq_for_incidents(since_str)
-    print(f"Model returned {len(candidates)} candidate incident(s).")
+
+    search_results = gather_search_results()
+    print(f"Tavily returned {len(search_results)} unique source(s).")
+
+    candidates = ask_groq_to_extract(since_str, search_results)
+    print(f"Model extracted {len(candidates)} candidate incident(s).")
 
     next_id = next_incident_id(existing_rows)
     accepted, needs_review = [], []
+    valid_urls = {r["url"] for r in search_results}
 
     for c in candidates:
         if not c.get("source_url") or not c.get("exam_name"):
             continue  # refuse anything without a real source or name
+        if c["source_url"] not in valid_urls:
+            print(f"Skipping row with unverified URL: {c.get('source_url')}")
+            continue
         if is_duplicate(c, existing_rows):
             print(f"Skipping likely duplicate: {c.get('exam_name')} / {c.get('area')}")
             continue
@@ -156,7 +215,7 @@ def main():
         row = {
             "incident_id": f"PL-{next_id:04d}",
             "date": c["date"],
-            "era": "",  # left blank on purpose — see NOTE below
+            "era": "",  # left blank on purpose — fill in during PR review if you want it
             "pm_of_year_exact": pm,
             "ruling_party_centre_exact": party,
             "exam_name": c.get("exam_name", ""),
