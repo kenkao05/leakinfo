@@ -4,7 +4,7 @@ A browsable dataset and dashboard of alleged and confirmed exam paper leaks and 
 
 Exam leaks in India rarely get tracked in one place. Each one is covered locally, gets a news cycle, and then scatters across hundreds of state and national outlets. This project pulls that scattered coverage into a single dataset and a small dashboard to explore it.
 
-**[Live site →](https://leakinfo.vercel.app/)**
+**[Live site → Click Here](https://leakinfo.vercel.app/)**
 
 ---
 
