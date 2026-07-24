@@ -33,13 +33,6 @@ const AboutPage = () => (
           assistant to do the searching, cross-checking, and structuring at a scale that would take a person weeks
           to do by hand.
         </p>
-        <p style={{ fontSize: '0.95rem', marginBottom: '0.9rem' }}>
-          That speed comes with a real tradeoff: the underlying research was not independently fact-checked
-          incident-by-incident against primary court records. Confidence levels are recorded per row, several
-          allegations were later denied by investigators, and coverage skews toward whichever states and years have
-          the most searchable English-language press. Treat this as a starting point for further reporting or
-          research, not a definitive record.
-        </p>
         <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
           Every incident links back to its original source in the Info tab — that's the place to verify anything you
           plan to rely on.
