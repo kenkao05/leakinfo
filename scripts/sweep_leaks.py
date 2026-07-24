@@ -6,9 +6,15 @@ arrests/convictions/deaths fields, are written to pending_review.csv instead
 so a human looks at them before they ever reach the dataset.
 
 Uses Tavily for search (free tier, no card) and a plain Groq model (not
-groq/compound) purely for extraction from the returned snippets. compound was
-returning 413 Request Entity Too Large on its internal search step, so search
-and extraction are kept as two separate calls here.
+groq/compound) purely for extraction from the returned snippets.
+
+Two things this version specifically guards against:
+1. Extracting protest/political-fallout coverage of an ALREADY-KNOWN leak as
+   if it were a new, separate incident (e.g. three articles about the same
+   2026 NEET protests becoming three fake new rows).
+2. Accepting duplicates WITHIN the same run — candidates are now checked
+   against each other, not just against what was already in the CSV before
+   the run started.
 """
 
 import csv
@@ -45,6 +51,11 @@ SEARCH_QUERIES = [
     "state PSC teacher eligibility test leak India",
 ]
 
+# How many recent existing rows to show the model, so it can recognize
+# "this article is about something already in the dataset" rather than
+# inventing a new row for follow-up coverage.
+RECENT_CONTEXT_ROWS = 15
+
 
 def compute_exact_fields(incident_date: date):
     """Deterministically derive PM/ruling party from the real transition dates —
@@ -78,9 +89,11 @@ def normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
-def is_duplicate(candidate, existing_rows):
-    """Fuzzy-ish dedupe: same exam name + same area, dates within 30 days."""
-    for row in existing_rows:
+def is_duplicate(candidate, rows_to_check):
+    """Fuzzy-ish dedupe: same exam name + same area, dates within 30 days.
+    rows_to_check is meant to include BOTH the pre-existing CSV rows AND
+    anything already accepted earlier in this same run."""
+    for row in rows_to_check:
         if normalize(candidate["exam_name"]) == normalize(row["exam_name"]) and \
            normalize(candidate["area"]) == normalize(row["area"]):
             try:
@@ -125,7 +138,18 @@ def gather_search_results():
     return all_results
 
 
-def ask_groq_to_extract(since_date: str, search_results):
+def recent_incidents_summary(existing_rows):
+    """A short plain-text list of recent known incidents, so the model can
+    recognize when an article is follow-up coverage of something already
+    in the dataset rather than a new incident."""
+    sorted_rows = sorted(existing_rows, key=lambda r: parse_date(r["date"]), reverse=True)
+    lines = []
+    for r in sorted_rows[:RECENT_CONTEXT_ROWS]:
+        lines.append(f"- {r['date']}: {r['exam_name']} ({r['area']}) — status: {r['leak_status']}")
+    return "\n".join(lines)
+
+
+def ask_groq_to_extract(since_date: str, search_results, existing_rows):
     if not search_results:
         return []
 
@@ -134,12 +158,36 @@ def ask_groq_to_extract(since_date: str, search_results):
         for r in search_results
     )
 
+    known_incidents = recent_incidents_summary(existing_rows)
+
     client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
-    system_prompt = f"""You are extracting India exam-leak incidents from search results below.
+    system_prompt = f"""You are extracting NEW India exam-leak INCIDENTS from search results below.
+An "incident" means a specific instance of an exam paper leak, exam cancellation due to
+irregularities, or a newly reported exam-related fraud/malpractice case.
+
 Only include incidents clearly described in the provided sources, reported since {since_date}.
 Never invent a URL or a detail not present in the snippets. If a snippet is too vague to extract
 a real incident, skip it.
+
+DO NOT create a row for an article that is:
+- Protest coverage, sit-ins, marches, or demonstrations about an exam leak (even if described in
+  detail) unless it also reports a genuinely NEW, separate leak incident not already covered below
+- A resignation demand, political statement, or government response (e.g. "fast-track courts
+  announced") about an ALREADY-KNOWN leak
+- A court hearing, verdict update, or investigation-progress update on an incident already listed
+  below
+- An opinion piece, retrospective, or analysis piece referencing past leaks
+
+These are RECENT INCIDENTS ALREADY IN THE DATASET — do not create new rows that are just follow-up
+coverage of these:
+{known_incidents}
+
+If an article is about ongoing fallout (protests, political demands, court proceedings) tied to one
+of the incidents above, or an incident with a similar exam name / area / date to one above, SKIP IT
+ENTIRELY. Only extract something as new if it describes a genuinely distinct leak — a different
+exam, different state, or a materially different date that isn't just a news update on something
+already known.
 
 Return ONLY a raw JSON array, no markdown fences, no commentary, no preamble. Each object must
 have EXACTLY these keys (use "" for unknown text/number fields):
@@ -151,7 +199,7 @@ body_type ("Central" or "State")
 area (state/UT name, or "All India")
 leak_status ("Confirmed", "Alleged", "Denied", or "Suspected")
 action_taken (+-joined tags, e.g. "Exam cancelled + Arrests-FIR + Probe (CBI)")
-note (2-3 sentence factual summary)
+note (2-3 sentence factual summary of the LEAK ITSELF, not the political fallout)
 arrests (integer as string, or "")
 convictions (integer as string, or "")
 aspirants_affected (integer as string, or "")
@@ -161,7 +209,7 @@ source_name (the publication name)
 source_url (must be one of the exact URLs given above — do not alter or guess at URLs)
 confidence ("High", "Medium", or "Low" — how well-corroborated is this, not how serious)
 
-If nothing qualifies, return [].
+If nothing qualifies as a genuinely new incident, return [].
 
 SOURCES:
 {source_block}"""
@@ -192,12 +240,17 @@ def main():
     search_results = gather_search_results()
     print(f"Tavily returned {len(search_results)} unique source(s).")
 
-    candidates = ask_groq_to_extract(since_str, search_results)
+    candidates = ask_groq_to_extract(since_str, search_results, existing_rows)
     print(f"Model extracted {len(candidates)} candidate incident(s).")
 
     next_id = next_incident_id(existing_rows)
     accepted, needs_review = [], []
     valid_urls = {r["url"] for r in search_results}
+
+    # This list grows as we accept rows within this same run, so candidate #2
+    # gets checked against candidate #1 too — not just against the CSV as it
+    # was before this run started.
+    rows_seen_this_run = list(existing_rows)
 
     for c in candidates:
         if not c.get("source_url") or not c.get("exam_name"):
@@ -205,7 +258,7 @@ def main():
         if c["source_url"] not in valid_urls:
             print(f"Skipping row with unverified URL: {c.get('source_url')}")
             continue
-        if is_duplicate(c, existing_rows):
+        if is_duplicate(c, rows_seen_this_run):
             print(f"Skipping likely duplicate: {c.get('exam_name')} / {c.get('area')}")
             continue
 
@@ -244,8 +297,10 @@ def main():
 
         if needs_manual_review:
             needs_review.append(row)
+            rows_seen_this_run.append(row)  # still counts for dedupe purposes
         else:
             accepted.append(row)
+            rows_seen_this_run.append(row)
             next_id += 1
 
     if accepted:
