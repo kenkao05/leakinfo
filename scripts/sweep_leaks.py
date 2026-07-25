@@ -149,8 +149,7 @@ def gather_search_results():
 
     # Most recent first — helps the model prioritize genuinely new stories
     # over evergreen/background pieces that happen to rank well.
-    all_results.sort(key=lambda r: r.get("published_date", ""), reverse=True)
-    return all_results
+    all_results.sort(key=lambda r: r.get("published_date") or "", reverse=True)
 
 
 def recent_incidents_summary(existing_rows):
