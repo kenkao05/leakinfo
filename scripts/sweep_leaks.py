@@ -8,15 +8,24 @@ so a human looks at them before they ever reach the dataset.
 Uses Tavily for search (free tier, no card) and a plain Groq model (not
 groq/compound) purely for extraction from the returned snippets.
 
-Guards this version specifically implements:
+Guards this version implements:
 1. Skips protest/political-fallout coverage of an ALREADY-KNOWN leak rather
    than treating it as a new incident.
 2. Dedupes candidates against BOTH the existing CSV and each other within
-   the same run.
+   the same run, using substring matching on exam name (not exact string
+   equality) since sources spell out exam names with varying completeness
+   (e.g. "Maharashtra TET" vs "Maharashtra Teacher Eligibility Test (TET)").
 3. Uses action-word + recency-narrowed search queries and sorts results by
    published date, so single-institution/regional stories aren't drowned
-   out by the dominant national story of the moment (e.g. NEET/CJP protest
-   coverage crowding out a small university-level leak).
+   out by the dominant national story of the moment.
+4. Increments the incident ID counter for EVERY accepted candidate,
+   including ones routed to pending_review.csv — previously only fully
+   auto-accepted rows incremented the counter, so multiple flagged rows in
+   the same run all got stamped with the same ID.
+5. Filters out social media URLs (Facebook, Twitter/X, Instagram, Reddit,
+   YouTube) before they ever reach the model — these aren't edited/
+   fact-checked sources and shouldn't be treated as equivalent to news
+   reporting.
 """
 
 import csv
@@ -45,12 +54,9 @@ PM_TRANSITIONS = [
     (date(2014, 5, 26), "Narendra Modi", "NDA"),
 ]
 
-# Action-word and category-specific queries. Pure topic queries (e.g. just
-# "India exam paper leak") tend to surface evergreen explainers and whatever
-# the dominant national story is that week, drowning out smaller regional or
-# single-institution leaks. Pairing topic + action word ("arrested",
-# "cancelled") and adding category-specific variants (university-level,
-# college-level) surfaces those smaller stories instead.
+# Action-word and category-specific queries. Pure topic queries tend to
+# surface evergreen explainers and whatever the dominant national story is
+# that week, drowning out smaller regional or single-institution leaks.
 SEARCH_QUERIES = [
     "India exam paper leak arrested",
     "India recruitment exam leak cancelled arrested",
@@ -60,6 +66,13 @@ SEARCH_QUERIES = [
     "university exam paper leak India professor arrested",
     "college exam question paper leaked India cancelled",
 ]
+
+# Social platforms aren't edited/fact-checked sources — exclude them at the
+# search stage so the model never even sees them as candidate sources.
+BLOCKED_DOMAINS = (
+    "facebook.com", "twitter.com", "x.com", "instagram.com",
+    "reddit.com", "youtube.com", "threads.net",
+)
 
 # How many recent existing rows to show the model, so it can recognize
 # "this article is about something already in the dataset" rather than
@@ -100,12 +113,17 @@ def normalize(s: str) -> str:
 
 
 def is_duplicate(candidate, rows_to_check):
-    """Fuzzy-ish dedupe: same exam name + same area, dates within 30 days.
-    rows_to_check is meant to include BOTH the pre-existing CSV rows AND
-    anything already accepted earlier in this same run."""
+    """Fuzzy dedupe: exam name as a SUBSTRING match either direction (not
+    exact equality, since sources spell out names with varying completeness)
+    + same area, dates within 30 days. rows_to_check should include BOTH the
+    pre-existing CSV rows AND anything already accepted earlier in this run."""
+    cand_name = normalize(candidate["exam_name"])
+    cand_area = normalize(candidate["area"])
     for row in rows_to_check:
-        if normalize(candidate["exam_name"]) == normalize(row["exam_name"]) and \
-           normalize(candidate["area"]) == normalize(row["area"]):
+        row_name = normalize(row["exam_name"])
+        row_area = normalize(row["area"])
+        name_match = bool(cand_name) and bool(row_name) and (cand_name in row_name or row_name in cand_name)
+        if name_match and cand_area == row_area:
             try:
                 d1 = parse_date(candidate["date"])
                 d2 = parse_date(row["date"])
@@ -143,13 +161,18 @@ def gather_search_results():
             print(f"Tavily search failed for query '{q}': {e}")
             continue
         for r in results:
-            if r.get("url") and r["url"] not in seen_urls:
-                seen_urls.add(r["url"])
-                all_results.append(r)
+            url = r.get("url", "")
+            if not url or url in seen_urls:
+                continue
+            if any(domain in url for domain in BLOCKED_DOMAINS):
+                print(f"Skipping social media source: {url}")
+                continue
+            seen_urls.add(url)
+            all_results.append(r)
 
     # Most recent first — helps the model prioritize genuinely new stories
     # over evergreen/background pieces that happen to rank well.
-    all_results.sort(key=lambda r: r.get("published_date") or "", reverse=True)
+    all_results.sort(key=lambda r: r.get("published_date", ""), reverse=True)
     return all_results
 
 
@@ -197,21 +220,23 @@ DO NOT create a row for an article that is:
 - An opinion piece, retrospective, or analysis piece referencing past leaks
 - An official denial/refutation of leak rumors (e.g. "CBSE says claims are baseless") — that is a
   non-incident, not a leak
+- An UNVERIFIED allegation with no confirmed action taken (no cancellation, no arrest, no official
+  investigation) — mark these Low confidence at most, and only if a credible news outlet reported it
 
 These are RECENT INCIDENTS ALREADY IN THE DATASET — do not create new rows that are just follow-up
-coverage of these:
+coverage of these, and use loose/partial name matches too (e.g. "Maharashtra TET" and "Maharashtra
+Teacher Eligibility Test" are the SAME incident, not two):
 {known_incidents}
 
 If an article is about ongoing fallout (protests, political demands, court proceedings) tied to one
 of the incidents above, or an incident with a similar exam name / area / date to one above, SKIP IT
-ENTIRELY. Only extract something as new if it describes a genuinely distinct leak — a different
-exam, different institution, different state, or a materially different date that isn't just a
-news update on something already known.
+ENTIRELY. Only extract something as new if it describes a genuinely distinct leak.
 
 Return ONLY a raw JSON array, no markdown fences, no commentary, no preamble. Each object must
 have EXACTLY these keys (use "" for unknown text/number fields):
 
-date (YYYY-MM-DD, or YYYY-01-01 if only the year is known)
+date (YYYY-MM-DD — use the date of the EXAM/INCIDENT itself, not the date of an arrest or report
+  that came later, if both are mentioned)
 exam_name
 conducting_body
 body_type ("Central" or "State")
@@ -224,7 +249,7 @@ convictions (integer as string, or "")
 aspirants_affected (integer as string, or "")
 linked_deaths (integer as string, or "")
 deaths_note (only if linked_deaths > 0)
-source_name (the publication name)
+source_name (the publication name — must be a real news outlet, not a social media platform)
 source_url (must be one of the exact URLs given above — do not alter or guess at URLs)
 confidence ("High", "Medium", or "Low" — how well-corroborated is this, not how serious)
 
@@ -257,7 +282,7 @@ def main():
     print(f"Sweeping for incidents since {since_str}...")
 
     search_results = gather_search_results()
-    print(f"Tavily returned {len(search_results)} unique source(s).")
+    print(f"Tavily returned {len(search_results)} unique source(s) after filtering.")
 
     candidates = ask_groq_to_extract(since_str, search_results, existing_rows)
     print(f"Model extracted {len(candidates)} candidate incident(s).")
@@ -266,9 +291,9 @@ def main():
     accepted, needs_review = [], []
     valid_urls = {r["url"] for r in search_results}
 
-    # This list grows as we accept rows within this same run, so candidate #2
-    # gets checked against candidate #1 too — not just against the CSV as it
-    # was before this run started.
+    # This list grows as we accept/flag rows within this same run, so
+    # candidate #2 gets checked against candidate #1 too — not just against
+    # the CSV as it was before this run started.
     rows_seen_this_run = list(existing_rows)
 
     for c in candidates:
@@ -314,13 +339,15 @@ def main():
             or row["linked_deaths"] not in ("", "0")
         )
 
+        # next_id is incremented in BOTH branches now — previously only the
+        # accepted branch incremented it, so multiple flagged rows in the
+        # same run all got stamped with the same incident_id.
         if needs_manual_review:
             needs_review.append(row)
-            rows_seen_this_run.append(row)  # still counts for dedupe purposes
         else:
             accepted.append(row)
-            rows_seen_this_run.append(row)
-            next_id += 1
+        rows_seen_this_run.append(row)
+        next_id += 1
 
     if accepted:
         with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
