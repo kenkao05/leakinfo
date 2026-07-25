@@ -8,13 +8,15 @@ so a human looks at them before they ever reach the dataset.
 Uses Tavily for search (free tier, no card) and a plain Groq model (not
 groq/compound) purely for extraction from the returned snippets.
 
-Two things this version specifically guards against:
-1. Extracting protest/political-fallout coverage of an ALREADY-KNOWN leak as
-   if it were a new, separate incident (e.g. three articles about the same
-   2026 NEET protests becoming three fake new rows).
-2. Accepting duplicates WITHIN the same run — candidates are now checked
-   against each other, not just against what was already in the CSV before
-   the run started.
+Guards this version specifically implements:
+1. Skips protest/political-fallout coverage of an ALREADY-KNOWN leak rather
+   than treating it as a new incident.
+2. Dedupes candidates against BOTH the existing CSV and each other within
+   the same run.
+3. Uses action-word + recency-narrowed search queries and sorts results by
+   published date, so single-institution/regional stories aren't drowned
+   out by the dominant national story of the moment (e.g. NEET/CJP protest
+   coverage crowding out a small university-level leak).
 """
 
 import csv
@@ -43,12 +45,20 @@ PM_TRANSITIONS = [
     (date(2014, 5, 26), "Narendra Modi", "NDA"),
 ]
 
+# Action-word and category-specific queries. Pure topic queries (e.g. just
+# "India exam paper leak") tend to surface evergreen explainers and whatever
+# the dominant national story is that week, drowning out smaller regional or
+# single-institution leaks. Pairing topic + action word ("arrested",
+# "cancelled") and adding category-specific variants (university-level,
+# college-level) surfaces those smaller stories instead.
 SEARCH_QUERIES = [
-    "India exam paper leak",
-    "India recruitment exam leak cancelled",
+    "India exam paper leak arrested",
+    "India recruitment exam leak cancelled arrested",
     "NEET JEE CUET leak investigation",
-    "India board exam paper leak",
-    "state PSC teacher eligibility test leak India",
+    "India board exam paper leak cancelled",
+    "state PSC teacher eligibility test leak India arrested",
+    "university exam paper leak India professor arrested",
+    "college exam question paper leaked India cancelled",
 ]
 
 # How many recent existing rows to show the model, so it can recognize
@@ -113,8 +123,9 @@ def search_tavily(query: str):
             "api_key": os.environ["TAVILY_API_KEY"],
             "query": query,
             "topic": "news",
-            "time_range": "month",
-            "max_results": 8,
+            "time_range": "week",   # narrower window surfaces fresher, less-covered stories
+            "days": 14,             # explicit lookback, belt-and-suspenders with time_range
+            "max_results": 10,
         },
         timeout=30,
     )
@@ -135,6 +146,10 @@ def gather_search_results():
             if r.get("url") and r["url"] not in seen_urls:
                 seen_urls.add(r["url"])
                 all_results.append(r)
+
+    # Most recent first — helps the model prioritize genuinely new stories
+    # over evergreen/background pieces that happen to rank well.
+    all_results.sort(key=lambda r: r.get("published_date", ""), reverse=True)
     return all_results
 
 
@@ -154,7 +169,8 @@ def ask_groq_to_extract(since_date: str, search_results, existing_rows):
         return []
 
     source_block = "\n\n".join(
-        f"URL: {r['url']}\nTitle: {r.get('title', '')}\nSnippet: {r.get('content', '')[:500]}"
+        f"URL: {r['url']}\nPublished: {r.get('published_date', 'unknown')}\n"
+        f"Title: {r.get('title', '')}\nSnippet: {r.get('content', '')[:500]}"
         for r in search_results
     )
 
@@ -164,11 +180,12 @@ def ask_groq_to_extract(since_date: str, search_results, existing_rows):
 
     system_prompt = f"""You are extracting NEW India exam-leak INCIDENTS from search results below.
 An "incident" means a specific instance of an exam paper leak, exam cancellation due to
-irregularities, or a newly reported exam-related fraud/malpractice case.
+irregularities, or a newly reported exam-related fraud/malpractice case. This includes school,
+college, and university-level leaks, not just national/state government exams.
 
 Only include incidents clearly described in the provided sources, reported since {since_date}.
 Never invent a URL or a detail not present in the snippets. If a snippet is too vague to extract
-a real incident, skip it.
+a real incident, skip it. Use the Published date of each source to judge how current it is.
 
 DO NOT create a row for an article that is:
 - Protest coverage, sit-ins, marches, or demonstrations about an exam leak (even if described in
@@ -178,6 +195,8 @@ DO NOT create a row for an article that is:
 - A court hearing, verdict update, or investigation-progress update on an incident already listed
   below
 - An opinion piece, retrospective, or analysis piece referencing past leaks
+- An official denial/refutation of leak rumors (e.g. "CBSE says claims are baseless") — that is a
+  non-incident, not a leak
 
 These are RECENT INCIDENTS ALREADY IN THE DATASET — do not create new rows that are just follow-up
 coverage of these:
@@ -186,8 +205,8 @@ coverage of these:
 If an article is about ongoing fallout (protests, political demands, court proceedings) tied to one
 of the incidents above, or an incident with a similar exam name / area / date to one above, SKIP IT
 ENTIRELY. Only extract something as new if it describes a genuinely distinct leak — a different
-exam, different state, or a materially different date that isn't just a news update on something
-already known.
+exam, different institution, different state, or a materially different date that isn't just a
+news update on something already known.
 
 Return ONLY a raw JSON array, no markdown fences, no commentary, no preamble. Each object must
 have EXACTLY these keys (use "" for unknown text/number fields):
