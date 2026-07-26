@@ -1,8 +1,8 @@
 {
   "kpis": {
-    "total_incidents": 129,
+    "total_incidents": 130,
     "confirmed_pct": 77,
-    "total_arrests": 1770,
+    "total_arrests": 1771,
     "total_convictions": 125,
     "distinct_states": 25,
     "years_covered": "2000-2026"
@@ -34,7 +34,7 @@
     "2023": 12,
     "2024": 14,
     "2025": 6,
-    "2026": 7
+    "2026": 8
   },
   "era_data": [
     {
@@ -54,17 +54,17 @@
     {
       "pm": "Narendra Modi",
       "party": "NDA (BJP-led)",
-      "count": 99,
+      "count": 100,
       "years_in_office": 12.16,
-      "rate_per_year": 8.14
+      "rate_per_year": 8.22
     }
   ],
   "body_type_counts": {
     "Central": 34,
-    "State": 95
+    "State": 96
   },
   "leak_status_counts": {
-    "Confirmed": 99,
+    "Confirmed": 100,
     "Alleged": 21,
     "Denied": 6,
     "Suspected": 3
@@ -72,7 +72,7 @@
   "action_data": [
     {
       "label": "Arrests / FIR",
-      "count": 99
+      "count": 100
     },
     {
       "label": "Investigation / probe",
@@ -80,7 +80,7 @@
     },
     {
       "label": "Exam cancelled",
-      "count": 61
+      "count": 62
     },
     {
       "label": "Retest / re-exam",
@@ -122,7 +122,7 @@
     },
     {
       "state": "Uttarakhand",
-      "count": 6
+      "count": 7
     },
     {
       "state": "Gujarat",
@@ -2791,6 +2791,26 @@
       "source_name": "Careers360",
       "source_url": "https://news.careers360.com/madhya-pradesh-class-9-to-12-quarterly-exam-paper-leaked-on-social-media/amp",
       "confidence": "Low"
+    },
+    {
+      "id": "PL-0130",
+      "date": "2026-07-07",
+      "year": "2026",
+      "exam_name": "B.Tech (Machine Learning for Internet of Things + Electromagnetic Field Theory) Examination 2026",
+      "conducting_body": "Veer Madho Singh Bhandari Uttarakhand Technical University",
+      "body_type": "State",
+      "area": "Uttarakhand",
+      "pm": "Narendra Modi",
+      "party": "NDA (BJP-led)",
+      "leak_status": "Confirmed",
+      "action_taken": "Exam cancelled + Arrests-FIR",
+      "note": "An alleged paper leak surfaced at Veer Madho Singh Bhandari Uttarakhand Technical University, prompting the administration to cancel two B.Tech semester examinations. Ashish Kumar Gupta, an Assistant Professor at Shivalik College of Engineering, was arrested for allegedly sharing questions with students.",
+      "arrests": "1",
+      "convictions": "",
+      "aspirants_affected": "",
+      "source_name": "The Times of India",
+      "source_url": "https://timesofindia.indiatimes.com/india/uttarakhand-technical-university-cancels-two-exams-after-alleged-paper-leak-one-arrested/articleshow/132600191.cms",
+      "confidence": "High"
     }
   ]
 }
