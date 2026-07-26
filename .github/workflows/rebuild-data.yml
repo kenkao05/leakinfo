@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "india_exam_leaks_master.csv"
+  workflow_dispatch: {}
 
 jobs:
   rebuild:
