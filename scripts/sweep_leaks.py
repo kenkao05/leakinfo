@@ -19,13 +19,13 @@ Guards this version implements:
    published date, so single-institution/regional stories aren't drowned
    out by the dominant national story of the moment.
 4. Increments the incident ID counter for EVERY accepted candidate,
-   including ones routed to pending_review.csv — previously only fully
-   auto-accepted rows incremented the counter, so multiple flagged rows in
-   the same run all got stamped with the same ID.
+   including ones routed to pending_review.csv.
 5. Filters out social media URLs (Facebook, Twitter/X, Instagram, Reddit,
-   YouTube) before they ever reach the model — these aren't edited/
-   fact-checked sources and shouldn't be treated as equivalent to news
-   reporting.
+   YouTube) before they ever reach the model.
+6. Rejects a second candidate row that cites the SAME source_url as one
+   already accepted/flagged this run — prevents one article describing
+   two exams (e.g. "two exams cancelled") from becoming two separate rows
+   with a duplicated arrest count.
 """
 
 import csv
@@ -210,6 +210,12 @@ Only include incidents clearly described in the provided sources, reported since
 Never invent a URL or a detail not present in the snippets. If a snippet is too vague to extract
 a real incident, skip it. Use the Published date of each source to judge how current it is.
 
+IMPORTANT: if a single article describes multiple exams being cancelled/leaked as part of ONE
+event (e.g. "the university cancelled two exams after a leak"), return ONLY ONE row for that
+article, with all affected exam names combined into the exam_name field (e.g. "B.Tech (Exam A +
+Exam B)"). Do not create a separate row per exam name if they share the same source_url and the
+same underlying leak event.
+
 DO NOT create a row for an article that is:
 - Protest coverage, sit-ins, marches, or demonstrations about an exam leak (even if described in
   detail) unless it also reports a genuinely NEW, separate leak incident not already covered below
@@ -296,11 +302,21 @@ def main():
     # the CSV as it was before this run started.
     rows_seen_this_run = list(existing_rows)
 
+    # Tracks source_urls already used to produce a row this run — catches
+    # the case where one article covering multiple exams gets split into
+    # multiple candidate rows by the model despite the prompt instruction
+    # above. (This is the set that was missing an initialization line in
+    # the previous version, which would have caused a NameError crash.)
+    urls_seen_this_run = set()
+
     for c in candidates:
         if not c.get("source_url") or not c.get("exam_name"):
-            continue  # refuse anything without a real source or name
+            continue
         if c["source_url"] not in valid_urls:
             print(f"Skipping row with unverified URL: {c.get('source_url')}")
+            continue
+        if c["source_url"] in urls_seen_this_run:
+            print(f"Skipping — same source URL already produced a row this run: {c['source_url']}")
             continue
         if is_duplicate(c, rows_seen_this_run):
             print(f"Skipping likely duplicate: {c.get('exam_name')} / {c.get('area')}")
@@ -339,14 +355,13 @@ def main():
             or row["linked_deaths"] not in ("", "0")
         )
 
-        # next_id is incremented in BOTH branches now — previously only the
-        # accepted branch incremented it, so multiple flagged rows in the
-        # same run all got stamped with the same incident_id.
         if needs_manual_review:
             needs_review.append(row)
         else:
             accepted.append(row)
+
         rows_seen_this_run.append(row)
+        urls_seen_this_run.add(c["source_url"])
         next_id += 1
 
     if accepted:
